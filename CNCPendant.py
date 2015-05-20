@@ -12,6 +12,7 @@ import sys
 #import cgi
 import json
 import threading
+from websocket_server import WebsocketServer
 
 try:
 	import urlparse
@@ -25,9 +26,11 @@ except ImportError:
 
 HOSTNAME = "localhost"
 port = 8080
-
 httpd = None
 prgpath = os.path.abspath(os.path.dirname(sys.argv[0]))
+
+ws_server = None
+ws_port = 9001
 
 #==============================================================================
 # Simple Pendant controller for CNC
@@ -48,57 +51,11 @@ class Pendant(HTTPServer.BaseHTTPRequestHandler):
 	#----------------------------------------------------------------------
 	def do_GET(self):
 		"""Respond to a GET request."""
-		if "?" in self.path:
-			page,arg = self.path.split("?",1)
-			arg = dict(urlparse.parse_qsl(arg))
-		else:
-			page = self.path
-			arg = None
 
-		#print self.path,type(self.path)
-		#print page
-		#print arg
+		page = self.path
+		arg = None
 
-		if page == "/send":
-			if arg is None: return
-			for key,value in arg.items():
-				if key=="gcode":
-					for line in value.split('\n'):
-						httpd.app.queue.put(line+"\n")
-				elif key=="cmd":
-					httpd.app.pendant.put(value)
-			#send empty response so browser does not generate errors
-			self.do_HEAD(200, "text/text")
-			self.wfile.write("")
-
-		elif page == "/state":
-			self.do_HEAD(200, "text/text")
-			self.wfile.write(json.dumps(httpd.app._pos))
-
-		elif page == "/config":
-			self.do_HEAD(200, "text/text")
-			snd = {}
-			snd["rpmmax"] = httpd.app.get("CNC","spindlemax")
-			self.wfile.write(json.dumps(snd))
-
-		elif page == "/icon":
-			if arg is None: return
-			self.do_HEAD(200, "image/gif")
-
-			filename = os.path.join(
-					os.path.abspath(
-						os.path.dirname(sys.argv[0])),
-					"icons",
-					arg["name"]+".gif")
-			try:
-				f = open(filename,"rb")
-				self.wfile.write(f.read())
-				f.close()
-			except:
-				pass
-
-		else:
-			self.mainPage(page[1:])
+		self.mainPage(page[1:])
 
 	# ---------------------------------------------------------------------
 	def mainPage(self, page):
@@ -128,10 +85,42 @@ Page not found.
 </html>
 """)
 
+# HANDLE WEBSOCKET COMMUNICATION
+# -----------------------------------------------------------------------------
+# receive message from client
+def ws_receive(client, server, message):
+	result = json.loads(message) #assume all messages from client are JSON format
+
+	#handle result, for now just dump to cmd line
+	if result['type'] == "state":
+		ws_send(json.dumps(httpd.app._pos))
+
+	elif result['type'] == "config":
+		snd = {}
+		snd["rpmmax"] = httpd.app.get("CNC","spindlemax")
+		ws_send(json.dumps(snd))
+
+	elif result['type'] == "command":
+		httpd.app.pendant.put(result['content'])
+
+	elif result['type'] == "gcode":
+		for line in result['content'].split('\n'):
+			httpd.app.queue.put(line+"\n")
+
+# send message to all connected clients
+def ws_send(msg):
+	global ws_server
+	try:
+		ws_server.send_message_to_all(msg)
+	except:
+		ws_server = None
+
+# HTTP SERVER INITIALIZATION
 # -----------------------------------------------------------------------------
 def _server(app):
 	global httpd
 	server_class = HTTPServer.HTTPServer
+	
 	try:
 		httpd = server_class(('', port), Pendant)
 		httpd.app = app
@@ -139,21 +128,45 @@ def _server(app):
 	except:
 		httpd = None
 
+# WEBSOCKET SERVER INITIALIZATION
+# -----------------------------------------------------------------------------
+def _wsServer():
+	global ws_server
+	ws_server_class = WebsocketServer
+
+	try:
+		ws_server = ws_server_class(ws_port, host="0.0.0.0")
+		ws_server.set_fn_message_received(ws_receive) #set receiving function
+		ws_server.run_forever() #start ws server
+	except:
+		ws_server = None
+
 # -----------------------------------------------------------------------------
 def start(app):
 	global httpd
+	global ws_server
 
-	if httpd is not None: return False
-	thread = threading.Thread(target=_server, args=(app,))
-	thread.start()
+	if httpd is not None or ws_server is not None: return False
+	
+	http_thread = threading.Thread(target=_server, args=(app,))
+	http_thread.start()
+
+	ws_thread = threading.Thread(target=_wsServer)
+	ws_thread.start()
+
 	return True
 
 # -----------------------------------------------------------------------------
 def stop():
 	global httpd
-	if httpd is None: return False
+	global ws_server
+	if httpd is None or ws_server is None: return False
+	
 	httpd.shutdown()
 	httpd = None
+	
+	ws_server.server_close()
+	ws_server = None
 	return True
 
 if __name__ == '__main__':

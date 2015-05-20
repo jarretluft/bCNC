@@ -8,11 +8,73 @@
 
 <script type="text/javascript">
 	/* set up all functions */
+	var ws; //set up websocket
+	var sendmessage = function(msg) {}; //fake sendmessage until WS is initialized
 
+	function ws_init() {
+		var ip = $(location).attr('href').split("//")[1].split(":")[0];
+		// Connect to Web Socket
+		ws = new WebSocket("ws://" + ip + ":9001/");
+
+		// Set event handlers.
+		ws.onopen = function() {
+			console.log("WS: onopen");
+		};
+
+		ws.onmessage = function(e) {
+			// e.data contains received string.
+			//console.log("WS: onmessage: " + e.data);
+			getMessage(e.data);
+		};
+
+		ws.onclose = function() {
+			console.log("WS: onclose");
+		};
+
+		ws.onerror = function(e) {
+			console.log("WS: onerror");
+			console.log(e)
+		};
+
+		sendmessage = function(msg){
+			ws.send(msg);
+		}
+		
+	}
+
+	
+	
     var rpmmax = 12000;
     var xmlhttp = false;
     var WCS = ["G54", "G55", "G56", "G57", "G58", "G59", "G28", "G30", "G92"];
     var WCSVAL = ["wcsx", "wcsy", "wcsz"];
+
+    var getMessage = function(msg){
+    	result = JSON.parse(msg);
+
+    	if(result.state !== undefined)
+    		$('#state').html(result.state);
+    	if(result.color !== undefined)
+    		$('#state').bgColor = result.color;
+    	if(result.wx !== undefined)
+    		$('#x').html(result.wx);
+    	if(result.wy !== undefined)
+    		$('#y').html(result.wy);
+    	if(result.wz !== undefined)
+    		$('#z').html(result.wz);
+    	if(result.rpmmax !== undefined)
+    		rpmmax = result.rpmmax;
+    	if(result.G !== undefined){
+    		for (k=0; k<result.G.length; k++) {
+		    	if (WCS.indexOf(result.G[k]) > -1)
+		    		$('#wcs').val(result.G[k]);
+			    else if (result.G[k] == "M8")
+			    	$('#coolant').val("On");
+			    else if (result.G[k] == "M3")
+			    	$('#spindle').val("100%");
+		    }
+    	}
+    }
 
     function findWcs(x)
     {
@@ -21,40 +83,19 @@
 	    return -1;
     } // findWcs
 
+
     function getState()
     {
-	    $.ajax({
-		    url: '/state',
-		    dataType: 'json',
-		    success: function(result,status,xhr){
-			    $('#state').html(result.state);
-			    $('#state').bgColor = result.color;
-			    $('#x').html(result.wx);
-			    $('#y').html(result.wy);
-			    $('#z').html(result.wz);
-			    //parse $G response			    
-			    for (k=0; k<result.G.length; k++) {
-			    	if (WCS.indexOf(result.G[k]) > -1)
-			    		$('#wcs').val(result.G[k]);
-				    else if (result.G[k] == "M8")
-				    	$('#coolant').val("On");
-				    else if (result.G[k] == "M3")
-				    	$('#spindle').val("100%");
-			    }
-		    }
-	    });
+	    tmp = {'type': 'state'};
+	    sendmessage(JSON.stringify(tmp));
     } // getState
 
-    /* parse once configuration */
-    function getConfig() {
-        $.ajax({
-		    url: '/config',
-		    dataType: 'json',
-		    success: function(result,status,xhr){
-		        rpmmax = result.rpmmax;
-		    }
-	    });
-    } // getConfig
+    function getConfig()
+    {
+	    tmp = {'type': 'config'};
+	    tmp = JSON.stringify(tmp);
+	    sendmessage(tmp);
+    } // getState
 
     function vibrate(t)
     { //safari has issues with 'notification'
@@ -67,10 +108,8 @@
 
     function sendCmd(command)
     {
-	    $.ajax({
-	        url: '/send',
-	        data: { cmd: command }
-	    });
+    	tmp = {'type': 'command', 'content': command};
+	    sendmessage(JSON.stringify(tmp));
     
         vibrate(500);
     }
@@ -78,10 +117,8 @@
     /*is this necessary when sendCmd would do the same thing?*/
     function sendGcode(command)
     {
-	    $.ajax({
-	        url: '/send',
-	        data: { gcode: command }
-	    });
+		tmp = {'type': 'gcode', 'content': command};
+	    sendmessage(JSON.stringify(tmp));
 
 	    vibrate(50);
     } // sendCmd
@@ -190,7 +227,7 @@
     	sendGcode("$#\n$G\n");
         getConfig();
         setInterval(getState, 1000);
-
+        ws_init();
         /* ASSIGN FUNCTIONS TO UI ELEMENTS */
     });
 
