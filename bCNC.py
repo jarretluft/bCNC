@@ -2,10 +2,11 @@
 # -*- coding: latin1 -*-
 # $Id: bCNC.py,v 1.6 2014/10/15 15:04:48 bnv Exp bnv $
 #
-# Author:       vvlachoudis@gmail.com
+# Author: vvlachoudis@gmail.com
 # Date: 24-Aug-2014
 
-__version__ = "0.4"
+__version__ = "0.4.8"
+__date__    = "30 May 2015"
 __author__  = "Vasilis Vlachoudis"
 __email__   = "vvlachoudis@gmail.com"
 
@@ -53,9 +54,10 @@ import CNCPendant
 
 BAUDS = [2400, 4800, 9600, 19200, 38400, 57600, 115200]
 
-SERIAL_POLL   = 0.250 # s
-MONITOR_AFTER =  250 # ms
-DRAW_AFTER    =  300 # ms
+SERIAL_POLL   = 0.250	# s
+G_POLL        = 10	# s
+MONITOR_AFTER =  250	# ms
+DRAW_AFTER    =  300	# ms
 
 RX_BUFFER_SIZE = 128
 
@@ -77,17 +79,21 @@ ZERO = ["G28", "G30", "G92"]
 
 STATECOLOR = {	"Alarm": "Red",
 		"Run"  : "LightGreen",
+		"Hold" : "Orange",
 		"Connected" : "Orange",
 		NOT_CONNECTED: "OrangeRed"}
 STATECOLORDEF = "LightYellow"
 
-DISTANCE_MODE = { "G90" : "Abs.",
-		  "G91" : "Inc." }
+DISTANCE_MODE = { "G90" : "Absolute",
+		  "G91" : "Incremental" }
 FEED_MODE     = { "G93" : "1/Time",
 		  "G94" : "unit/min",
 		  "G95" : "unit/rev"}
 UNITS         = { "G20" : "inch",
 		  "G21" : "mm" }
+PLANE         = { "G17" : "XY",
+		  "G18" : "ZX",
+		  "G19" : "YZ" }
 
 #==============================================================================
 # Main Application window
@@ -100,6 +106,8 @@ class Application(Toplevel):
 		self.widgets = []
 
 		# Global variables
+		self.history     = []
+		self._historyPos = None
 		CNC.CNC.loadConfig(Utils.config)
 		self.gcode = CNC.GCode()
 		self.cnc   = self.gcode.cnc
@@ -107,6 +115,8 @@ class Application(Toplevel):
 		self.view.set(CNCCanvas.VIEWS[0])
 		self.view.trace('w', self.viewChange)
 		self.tools = CNCTools.Tools(self.gcode)
+		self.loadConfig()	# load rest of config
+		self.gstate = {}	# $G state results widget dictionary
 
 		self.draw_axes   = BooleanVar()
 		self.draw_axes.set(bool(int(Utils.config.get("Canvas","axes"))))
@@ -231,7 +241,154 @@ class Application(Toplevel):
 		self.tabPage.pack(fill=BOTH, expand=YES)
 		self.tabPage.bind("<<ChangePage>>", self.changePage)
 
-		# Control
+		self._controlTab()
+		self._terminalTab()
+		self._wcsTab()
+		self._editorTab()
+
+		# ---- Tools ----
+		frame = self.tabPage["Tools"]
+
+		self.toolFrame = CNCTools.ToolFrame(frame, self, self.tools)
+		self.toolFrame.pack(fill=BOTH, expand=YES)
+
+		# --- Canvas ---
+		frame = Frame(paned)
+		paned.add(frame)
+
+		self.canvas = CNCCanvas.CNCCanvas(frame, self, takefocus=True, background="White")
+		self.canvas.grid(row=0, column=0, sticky=NSEW)
+		sb = Scrollbar(frame, orient=VERTICAL, command=self.canvas.yview)
+		sb.grid(row=0, column=1, sticky=NS)
+		self.canvas.config(yscrollcommand=sb.set)
+		sb = Scrollbar(frame, orient=HORIZONTAL, command=self.canvas.xview)
+		sb.grid(row=1, column=0, sticky=EW)
+		self.canvas.config(xscrollcommand=sb.set)
+
+		frame.grid_rowconfigure(0, weight=1)
+		frame.grid_columnconfigure(0, weight=1)
+
+		# Canvas bindings
+		self.canvas.bind('<Control-Key-c>',	self.copy)
+		self.canvas.bind('<Control-Key-x>',	self.cut)
+		self.canvas.bind('<Control-Key-v>',	self.paste)
+#		self.canvas.bind("<Control-Key-Up>",	self.commandOrderUp)
+#		self.canvas.bind("<Control-Key-Down>",	self.commandOrderDown)
+		self.canvas.bind("<Delete>",		self.gcodelist.deleteLine)
+		self.canvas.bind("<BackSpace>",		self.gcodelist.deleteLine)
+		try:
+			self.canvas.bind("<KP_Delete>",	self.gcodelist.deleteLine)
+		except:
+			pass
+
+		# Global bindings
+		self.bind('<Escape>',		self.unselectAll)
+		self.bind('<Control-Key-a>',	self.selectAll)
+		self.bind('<Control-Key-f>',	self.find)
+		self.bind('<Control-Key-g>',	self.findNext)
+		self.bind('<Control-Key-h>',	self.replace)
+		self.bind('<Control-Key-e>',	self.gcodelist.toggleExpand)
+		self.bind('<Control-Key-l>',	self.gcodelist.toggleEnable)
+		self.bind("<Control-Key-q>",	self.quit)
+		self.bind("<Control-Key-o>",	self.loadDialog)
+		self.bind("<Control-Key-r>",	self.drawAfter)
+		self.bind("<Control-Key-s>",	self.saveAll)
+		self.bind('<Control-Key-y>',	self.redo)
+		self.bind('<Control-Key-z>',	self.undo)
+		self.bind('<Control-Key-Z>',	self.redo)
+		self.canvas.bind('<Key-space>',	self.commandFocus)
+		self.bind('<Control-Key-space>',self.commandFocus)
+
+#		self.bind('<F1>',		self.help)
+#		self.bind('<F2>',		self.rename)
+
+		self.bind('<F3>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_XY]))
+		self.bind('<F4>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_XZ]))
+		self.bind('<F5>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_YZ]))
+		self.bind('<F6>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_ISO1]))
+		self.bind('<F7>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_ISO2]))
+		self.bind('<F8>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_ISO3]))
+
+		self.bind('<Up>',		self.moveYup)
+		self.bind('<Down>',		self.moveYdown)
+		self.bind('<Right>',		self.moveXup)
+		self.bind('<Left>',		self.moveXdown)
+		self.bind('<Prior>',		self.moveZup)
+		self.bind('<Next>',		self.moveZdown)
+
+		self.bind('<Key-plus>',		self.incStep)
+		self.bind('<Key-equal>',	self.incStep)
+		self.bind('<KP_Add>',		self.incStep)
+		self.bind('<Key-minus>',	self.decStep)
+		self.bind('<Key-underscore>',	self.decStep)
+		self.bind('<KP_Subtract>',	self.decStep)
+
+		self.bind('<Key-asterisk>',	self.mulStep)
+		self.bind('<KP_Multiply>',	self.mulStep)
+		self.bind('<Key-slash>',	self.divStep)
+		self.bind('<KP_Divide>',	self.divStep)
+
+		self.bind('<Key-exclam>',	self.feedHold)
+		self.bind('<Key-asciitilde>',	self.resume)
+
+		self.bind('<FocusIn>',		self.focusIn)
+
+		self.protocol("WM_DELETE_WINDOW", self.quit)
+
+		for x in self.widgets:
+			if isinstance(x,Entry):
+				x.bind("<Escape>", self.canvasFocus)
+
+		# Tool bar and Menu
+		self.createToolbar(toolbar)
+		self.createMenu()
+
+		self.canvas.focus_set()
+
+		# Highlight variables
+		self.queue       = Queue()	# Command queue to send to GRBL
+		self.log         = Queue()	# Log queue returned from GRBL
+		self.pendant     = Queue()	# Command queue to be executed from Pendant
+		self.serial      = None
+		self.thread      = None
+		self._dx = self._dy = self._dz = 0.0
+		self._pos        = {"wx":0.0, "wy":0.0, "wz":0.0,
+				    "mx":0.0, "my":0.0, "mz":0.0,
+				    "state": NOT_CONNECTED,
+				    "color": STATECOLOR[NOT_CONNECTED],
+				    "G": ["G20","G54"]}
+		self._posUpdate  = False
+		self._wcsUpdate  = False
+		self._probeUpdate= False
+		self._gUpdate    = False
+		self.running     = False
+		self._runLines   = 0
+		#self._runLineMap = []
+		self._quit       = 0
+		self._pause      = False
+		self._drawAfter  = None	# after handle for modification
+		self._alarm      = True
+		self._inFocus    = False
+		self.monitorSerial()
+		self.toggleDrawFlag()
+
+		# Create tools
+		self.toolFrame.fill()
+		try:
+			self.toolFrame.set(Utils.config.get(Utils.__prg__, "tool"))
+		except:
+			self.toolFrame.set("Box")
+
+		if int(Utils.config.get("Connection","pendant")):
+			self.startPendant(False)
+
+		if int(Utils.config.get("Connection","openserial")):
+			self.openClose()
+
+	#----------------------------------------------------------------------
+	# Control
+	#----------------------------------------------------------------------
+	def _controlTab(self):
 		frame = self.tabPage["Control"]
 
 		# Control -> Connection
@@ -292,15 +449,11 @@ class Application(Toplevel):
 		lframe = LabelFrame(frame, text="Control", foreground="DarkBlue")
 		lframe.pack(side=TOP, fill=X)
 
-		# Jog
-		f = Frame(lframe)
-		f.pack(expand=YES, fill=BOTH)
-
 		row,col = 0,0
-		Label(f, text="Z").grid(row=row, column=col)
+		Label(lframe, text="Z").grid(row=row, column=col)
 
 		col += 3
-		Label(f, text="Y").grid(row=row, column=col)
+		Label(lframe, text="Y").grid(row=row, column=col)
 
 		# ---
 		row += 1
@@ -309,7 +462,7 @@ class Application(Toplevel):
 		width=3
 		height=2
 
-		b = Button(f, text=Unicode.BLACK_UP_POINTING_TRIANGLE,
+		b = Button(lframe, text=Unicode.BLACK_UP_POINTING_TRIANGLE,
 					width=width, height=height,
 					command=self.moveZup)
 		b.grid(row=row, column=col, sticky=EW)
@@ -317,7 +470,7 @@ class Application(Toplevel):
 		self.widgets.append(b)
 
 		col += 2
-		b = Button(f, text=Unicode.UPPER_LEFT_TRIANGLE,
+		b = Button(lframe, text=Unicode.UPPER_LEFT_TRIANGLE,
 					width=width, height=height,
 					command=self.moveXdownYup)
 
@@ -326,7 +479,7 @@ class Application(Toplevel):
 		self.widgets.append(b)
 
 		col += 1
-		b = Button(f, text=Unicode.BLACK_UP_POINTING_TRIANGLE,
+		b = Button(lframe, text=Unicode.BLACK_UP_POINTING_TRIANGLE,
 					width=width, height=height,
 					command=self.moveYup)
 		b.grid(row=row, column=col, sticky=EW)
@@ -334,7 +487,7 @@ class Application(Toplevel):
 		self.widgets.append(b)
 
 		col += 1
-		b = Button(f, text=Unicode.UPPER_RIGHT_TRIANGLE,
+		b = Button(lframe, text=Unicode.UPPER_RIGHT_TRIANGLE,
 					width=width, height=height,
 					command=self.moveXupYup)
 		b.grid(row=row, column=col, sticky=EW)
@@ -342,13 +495,13 @@ class Application(Toplevel):
 		self.widgets.append(b)
 
 		col += 2
-		b = Button(f, text=u"\u00D710", width=3, padx=1, pady=1, command=self.mulStep)
+		b = Button(lframe, text=u"\u00D710", width=3, padx=1, pady=1, command=self.mulStep)
 		b.grid(row=row, column=col, sticky=EW+S)
 		tkExtra.Balloon.set(b, "Multiply step by 10")
 		self.widgets.append(b)
 
 		col += 1
-		b = Button(f, text="+", width=3, padx=1, pady=1, command=self.incStep)
+		b = Button(lframe, text="+", width=3, padx=1, pady=1, command=self.incStep)
 		b.grid(row=row, column=col, sticky=EW+S)
 		tkExtra.Balloon.set(b, "Increase step by 1 unit")
 		self.widgets.append(b)
@@ -356,10 +509,10 @@ class Application(Toplevel):
 		# ---
 		row += 1
 		col = 1
-		Label(f, text="X", width=3, anchor=E).grid(row=row, column=col, sticky=E)
+		Label(lframe, text="X", width=3, anchor=E).grid(row=row, column=col, sticky=E)
 
 		col += 1
-		b = Button(f, text=Unicode.BLACK_LEFT_POINTING_TRIANGLE,
+		b = Button(lframe, text=Unicode.BLACK_LEFT_POINTING_TRIANGLE,
 					width=width, height=height,
 					command=self.moveXdown)
 		b.grid(row=row, column=col, sticky=EW)
@@ -367,15 +520,14 @@ class Application(Toplevel):
 		self.widgets.append(b)
 
 		col += 1
-		b = Button(f, text=Unicode.LARGE_CIRCLE,
+		b = Utils.UserButton(lframe, self, 0, text=Unicode.LARGE_CIRCLE,
 					width=width, height=height,
 					command=self.go2origin)
 		b.grid(row=row, column=col, sticky=EW)
-		tkExtra.Balloon.set(b, "Move to 0, 0, 0")
 		self.widgets.append(b)
 
 		col += 1
-		b = Button(f, text=Unicode.BLACK_RIGHT_POINTING_TRIANGLE,
+		b = Button(lframe, text=Unicode.BLACK_RIGHT_POINTING_TRIANGLE,
 					width=width, height=height,
 					command=self.moveXup)
 		b.grid(row=row, column=col, sticky=EW)
@@ -384,10 +536,10 @@ class Application(Toplevel):
 
 		# --
 		col += 1
-		Label(f,"",width=2).grid(row=row,column=col)
+		Label(lframe,"",width=2).grid(row=row,column=col)
 
 		col += 1
-		self.step = tkExtra.Combobox(f, width=6, background="White")
+		self.step = tkExtra.Combobox(lframe, width=6, background="White")
 		self.step.grid(row=row, column=col, columnspan=2, sticky=EW)
 		self.step.set(Utils.config.get("Control","step"))
 		self.step.fill(["0.001",
@@ -409,7 +561,7 @@ class Application(Toplevel):
 		row += 1
 		col = 0
 
-		b = Button(f, text=Unicode.BLACK_DOWN_POINTING_TRIANGLE,
+		b = Button(lframe, text=Unicode.BLACK_DOWN_POINTING_TRIANGLE,
 					width=width, height=height,
 					command=self.moveZdown)
 		b.grid(row=row, column=col, sticky=EW)
@@ -417,7 +569,7 @@ class Application(Toplevel):
 		self.widgets.append(b)
 
 		col += 2
-		b = Button(f, text=Unicode.LOWER_LEFT_TRIANGLE,
+		b = Button(lframe, text=Unicode.LOWER_LEFT_TRIANGLE,
 					width=width, height=height,
 					command=self.moveXdownYdown)
 		b.grid(row=row, column=col, sticky=EW)
@@ -425,7 +577,7 @@ class Application(Toplevel):
 		self.widgets.append(b)
 
 		col += 1
-		b = Button(f, text=Unicode.BLACK_DOWN_POINTING_TRIANGLE,
+		b = Button(lframe, text=Unicode.BLACK_DOWN_POINTING_TRIANGLE,
 					width=width, height=height,
 					command=self.moveYdown)
 		b.grid(row=row, column=col, sticky=EW)
@@ -433,7 +585,7 @@ class Application(Toplevel):
 		self.widgets.append(b)
 
 		col += 1
-		b = Button(f, text=Unicode.LOWER_RIGHT_TRIANGLE,
+		b = Button(lframe, text=Unicode.LOWER_RIGHT_TRIANGLE,
 					width=width, height=height,
 					command=self.moveXupYdown)
 		b.grid(row=row, column=col, sticky=EW)
@@ -441,58 +593,135 @@ class Application(Toplevel):
 		self.widgets.append(b)
 
 		col += 2
-		b = Button(f, text=u"\u00F710", padx=1, pady=1, command=self.divStep)
+		b = Button(lframe, text=u"\u00F710", padx=1, pady=1, command=self.divStep)
 		b.grid(row=row, column=col, sticky=EW+N)
 		tkExtra.Balloon.set(b, "Divide step by 10")
 		self.widgets.append(b)
 
 		col += 1
-		b = Button(f, text="-", padx=1, pady=1, command=self.decStep)
+		b = Button(lframe, text="-", padx=1, pady=1, command=self.decStep)
 		b.grid(row=row, column=col, sticky=EW+N)
 		tkExtra.Balloon.set(b, "Decrease step by 1 unit")
 		self.widgets.append(b)
 
-		#f.grid_columnconfigure(6,weight=1)
+		#lframe.grid_columnconfigure(6,weight=1)
+
+		lframe = LabelFrame(frame, text="User", foreground="DarkBlue")
+		lframe.pack(side=TOP, fill=X)
+
+		n = Utils.getInt("Buttons","n",6)
+		for i in range(1,n):
+			b = Utils.UserButton(lframe, self, i)
+			b.grid(row=0, column=i-1, sticky=NSEW)
+			lframe.grid_columnconfigure(i-1, weight=1)
+			self.widgets.append(b)
 
 		# Control -> State
 		lframe = LabelFrame(frame, text="State", foreground="DarkBlue")
 		lframe.pack(side=TOP, fill=X)
 
-#		# State
-#		f = Frame(lframe)
-#		f.pack(fill=X)
-#
-#		# Absolute or relative mode
-#		self.distanceMode = tkExtra.Combobox(f, True,
-#					width=5,
-#					background="White")
-#					#command=self.modeChange)
-#		self.distanceMode.fill(sorted(DISTANCE_MODE.values()))
-#		self.distanceMode.pack(side=LEFT)
-#		tkExtra.Balloon.set(self.distanceMode, "Distance Mode")
-#
-#		# Feed mode
-#		self.feedMode = tkExtra.Combobox(f, True,
-#					width=8,
-#					background="White")
-#					#command=self.modeChange)
-#		self.feedMode.fill(sorted(FEED_MODE.values()))
-#		self.feedMode.pack(side=LEFT)
-#		tkExtra.Balloon.set(self.feedMode, "Feed Mode")
-#
-#		# Feed mode
-#		self.units = tkExtra.Combobox(f, True,
-#					width=6,
-#					background="White")
-#					#command=self.modeChange)
-#		self.units.fill(sorted(UNITS.values()))
-#		self.units.pack(side=LEFT)
-#		tkExtra.Balloon.set(self.units, "Units")
+		# State
+		f = Frame(lframe)
+		f.pack(side=TOP, fill=X)
 
+		# Absolute or relative mode
+		row, col = 0, 0
+		Label(f, text="Distance:").grid(row=row, column=col, sticky=E)
+		col += 1
+		self.distanceMode = tkExtra.Combobox(f, True,
+					width=5,
+					background="White",
+					command=self.distanceChange)
+		self.distanceMode.fill(sorted(DISTANCE_MODE.values()))
+		self.distanceMode.grid(row=row, column=col, columnspan=2, sticky=EW)
+		tkExtra.Balloon.set(self.distanceMode, "Distance Mode [G90,G91]")
+
+		# populate gstate dictionary
+		for k,v in DISTANCE_MODE.items(): self.gstate[k] = (self.distanceMode, v)
+
+		# Units mode
+		col += 2
+		Label(f, text="Units:").grid(row=row, column=col, sticky=E)
+		col += 1
+		self.units = tkExtra.Combobox(f, True,
+					width=5,
+					background="White",
+					command=self.unitsChange)
+		self.units.fill(sorted(UNITS.values()))
+		self.units.grid(row=row, column=col, sticky=EW)
+		tkExtra.Balloon.set(self.units, "Units [G20, G21]")
+		for k,v in UNITS.items(): self.gstate[k] = (self.units, v)
+
+		# Feed mode
+		row += 1
+		col = 0
+		Label(f, text="Feed:").grid(row=row, column=col, sticky=E)
+
+		col += 1
+		self.feedRate = tkExtra.FloatEntry(f, background="White", width=5)
+		self.feedRate.grid(row=row, column=col, sticky=EW)
+		self.feedRate.bind('<Return>',   self.setFeedRate)
+		self.feedRate.bind('<KP_Enter>', self.setFeedRate)
+		tkExtra.Balloon.set(self.feedRate, "Feed Rate [F#]")
+
+		col += 1
+		b = Button(f, text="set",
+				command=self.setFeedRate,
+				padx=1, pady=1)
+		b.grid(row=row, column=col, columnspan=2, sticky=W)
+
+		col += 1
+		Label(f, text="Mode:").grid(row=row, column=col, sticky=E)
+
+		col += 1
+		self.feedMode = tkExtra.Combobox(f, True,
+					width=5,
+					background="White",
+					command=self.feedModeChange)
+		self.feedMode.fill(sorted(FEED_MODE.values()))
+		self.feedMode.grid(row=row, column=col, sticky=EW)
+		tkExtra.Balloon.set(self.feedMode, "Feed Mode [G93, G94, G95]")
+		for k,v in FEED_MODE.items(): self.gstate[k] = (self.feedMode, v)
+
+		# Tool
+		row += 1
+		col = 0
+		Label(f, text="Tool:").grid(row=row, column=col, sticky=E)
+
+		col += 1
+		self.toolEntry = tkExtra.IntegerEntry(f, background="White", width=5)
+		self.toolEntry.grid(row=row, column=col, sticky=EW)
+		tkExtra.Balloon.set(self.toolEntry, "Tool number [T#]")
+
+		col += 1
+		b = Button(f, text="set",
+				command=self.setTool,
+				padx=1, pady=1)
+		b.grid(row=row, column=col, sticky=W)
+
+		# Plane
+		col += 1
+		Label(f, text="Plane:").grid(row=row, column=col, sticky=E)
+		col += 1
+		self.plane = tkExtra.Combobox(f, True,
+					width=5,
+					background="White",
+					command=self.planeChange)
+		self.plane.fill(sorted(PLANE.values()))
+		self.plane.grid(row=row, column=col, sticky=EW)
+		tkExtra.Balloon.set(self.plane, "Plane [G17,G18,G19]")
+		for k,v in PLANE.items(): self.gstate[k] = (self.plane, v)
+
+		f.grid_columnconfigure(1, weight=1)
+		f.grid_columnconfigure(4, weight=1)
+
+		# Spindle
+		f = Frame(lframe)
+		f.pack(side=BOTTOM, fill=X)
 		self.spindle = BooleanVar()
 		self.spindleSpeed = IntVar()
 
-		b = Checkbutton(lframe, text="Spindle",
+		b = Checkbutton(f, text="Spindle",
 				image=Utils.icons["spinningtop"],
 				compound=LEFT,
 				indicatoron=False,
@@ -502,7 +731,7 @@ class Application(Toplevel):
 		b.pack(side=LEFT, fill=Y)
 		self.widgets.append(b)
 
-		b = Scale(lframe, command=self.spindleControl,
+		b = Scale(f, command=self.spindleControl,
 				variable=self.spindleSpeed,
 				showvalue=True,
 				orient=HORIZONTAL,
@@ -532,7 +761,7 @@ class Application(Toplevel):
 				padx=3, pady=2,
 				command=self.pause)
 		b.pack(side=LEFT,expand=YES,fill=X)
-		tkExtra.Balloon.set(b, "Pause running program")
+		tkExtra.Balloon.set(b, "Pause running program. Sends either FEED_HOLD ! or CYCLE_START ~")
 
 		b = Button(f, text="Stop",
 				compound=LEFT,
@@ -545,9 +774,16 @@ class Application(Toplevel):
 		self.progress = tkExtra.ProgressBar(lframe, height=24)
 		self.progress.pack(fill=X)
 
-		# ---- Terminal ----
+	#----------------------------------------------------------------------
+	# Terminal
+	#----------------------------------------------------------------------
+	def _terminalTab(self):
 		frame = self.tabPage["Terminal"]
-		self.terminal = Text(frame, background="White", width=20, wrap=NONE, state=DISABLED)
+		self.terminal = Text(frame,
+					background="White",
+					width=20,
+					wrap=NONE,
+					state=DISABLED)
 		self.terminal.pack(side=LEFT, fill=BOTH, expand=YES)
 		sb = Scrollbar(frame, orient=VERTICAL, command=self.terminal.yview)
 		sb.pack(side=RIGHT, fill=Y)
@@ -555,7 +791,10 @@ class Application(Toplevel):
 		self.terminal.tag_config("SEND",  foreground="Blue")
 		self.terminal.tag_config("ERROR", foreground="Red")
 
-		# ---- WorkSpace ----
+	#----------------------------------------------------------------------
+	# WorkSpace
+	#----------------------------------------------------------------------
+	def _wcsTab(self):
 		frame = self.tabPage["WCS"]
 
 		# WorkSpace -> WPS
@@ -928,7 +1167,10 @@ class Application(Toplevel):
 		lframe.grid_columnconfigure(2,weight=2)
 		lframe.grid_columnconfigure(3,weight=1)
 
-		# --- GCode Editor ---
+	#----------------------------------------------------------------------
+	# GCode Editor
+	#----------------------------------------------------------------------
+	def _editorTab(self):
 		frame = self.tabPage["Editor"]
 
 		self.gcodelist = CNCList.CNCListbox(frame, self,
@@ -946,137 +1188,6 @@ class Application(Toplevel):
 		self.gcodelist.config(yscrollcommand=sb.set)
 
 		self.tabPage.changePage()
-
-		# ---- Tools ----
-		frame = self.tabPage["Tools"]
-
-		self.toolFrame = CNCTools.ToolFrame(frame, self, self.tools)
-		self.toolFrame.pack(fill=BOTH, expand=YES)
-
-		# --- Canvas ---
-		frame = Frame(paned)
-		paned.add(frame)
-
-		self.canvas = CNCCanvas.CNCCanvas(frame, self, takefocus=True, background="White")
-		self.canvas.grid(row=0, column=0, sticky=NSEW)
-		sb = Scrollbar(frame, orient=VERTICAL, command=self.canvas.yview)
-		sb.grid(row=0, column=1, sticky=NS)
-		self.canvas.config(yscrollcommand=sb.set)
-		sb = Scrollbar(frame, orient=HORIZONTAL, command=self.canvas.xview)
-		sb.grid(row=1, column=0, sticky=EW)
-		self.canvas.config(xscrollcommand=sb.set)
-
-		frame.grid_rowconfigure(0, weight=1)
-		frame.grid_columnconfigure(0, weight=1)
-
-		# Canvas bindings
-		self.canvas.bind('<Control-Key-c>',	self.copy)
-		self.canvas.bind('<Control-Key-x>',	self.cut)
-		self.canvas.bind('<Control-Key-v>',	self.paste)
-#		self.canvas.bind("<Control-Key-Up>",	self.commandOrderUp)
-#		self.canvas.bind("<Control-Key-Down>",	self.commandOrderDown)
-		self.canvas.bind("<Delete>",		self.gcodelist.deleteLine)
-		self.canvas.bind("<BackSpace>",		self.gcodelist.deleteLine)
-		try:
-			self.canvas.bind("<KP_Delete>",	self.gcodelist.deleteLine)
-		except:
-			pass
-
-		# Global bindings
-		self.bind('<Escape>',		self.unselectAll)
-		self.bind('<Control-Key-a>',	self.selectAll)
-		self.bind('<Control-Key-f>',	self.find)
-		self.bind('<Control-Key-g>',	self.findNext)
-		self.bind('<Control-Key-h>',	self.replace)
-		self.bind('<Control-Key-e>',	self.gcodelist.toggleExpand)
-		self.bind('<Control-Key-l>',	self.gcodelist.toggleEnable)
-		self.bind("<Control-Key-q>",	self.quit)
-		self.bind("<Control-Key-o>",	self.loadDialog)
-		self.bind("<Control-Key-r>",	self.drawAfter)
-		self.bind("<Control-Key-s>",	self.saveAll)
-		self.bind('<Control-Key-y>',	self.redo)
-		self.bind('<Control-Key-z>',	self.undo)
-		self.bind('<Control-Key-Z>',	self.redo)
-		self.canvas.bind('<Key-space>',	self.commandFocus)
-		self.bind('<Control-Key-space>',self.commandFocus)
-
-#		self.bind('<F1>',		self.help)
-#		self.bind('<F2>',		self.rename)
-
-		self.bind('<F3>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_XY]))
-		self.bind('<F4>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_XZ]))
-		self.bind('<F5>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_YZ]))
-		self.bind('<F6>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_ISO1]))
-		self.bind('<F7>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_ISO2]))
-		self.bind('<F8>',		lambda e,s=self : s.view.set(CNCCanvas.VIEWS[CNCCanvas.VIEW_ISO3]))
-
-		self.bind('<Up>',		self.moveYup)
-		self.bind('<Down>',		self.moveYdown)
-		self.bind('<Right>',		self.moveXup)
-		self.bind('<Left>',		self.moveXdown)
-		self.bind('<Prior>',		self.moveZup)
-		self.bind('<Next>',		self.moveZdown)
-
-		self.bind('<Key-plus>',		self.incStep)
-		self.bind('<Key-equal>',	self.incStep)
-		self.bind('<KP_Add>',		self.incStep)
-		self.bind('<Key-minus>',	self.decStep)
-		self.bind('<Key-underscore>',	self.decStep)
-		self.bind('<KP_Subtract>',	self.decStep)
-
-		self.bind('<Key-asterisk>',	self.mulStep)
-		self.bind('<KP_Multiply>',	self.mulStep)
-		self.bind('<Key-slash>',	self.divStep)
-		self.bind('<KP_Divide>',	self.divStep)
-
-		self.bind('<Key-exclam>',	self.feedHold)
-		self.bind('<Key-asciitilde>',	self.resume)
-
-		self.bind('<FocusIn>',		self.focusIn)
-
-		self.protocol("WM_DELETE_WINDOW", self.quit)
-
-		for x in self.widgets:
-			if isinstance(x,Entry):
-				x.bind("<Escape>", self.canvasFocus)
-
-		# Tool bar and Menu
-		self.createToolbar(toolbar)
-		self.createMenu()
-
-		self.canvas.focus_set()
-
-		# Highlight variables
-		self.history     = []
-		self._historyPos = None
-		self.queue       = Queue()	# Command queue to send to GRBL
-		self.log         = Queue()	# Log queue returned from GRBL
-		self.pendant     = Queue()	# Command queue to be executed from Pendant
-		self.serial      = None
-		self.thread      = None
-		self._dx = self._dy = self._dz = 0.0
-		self._pos        = {"wx":0.0, "wy":0.0, "wz":0.0,
-				    "mx":0.0, "my":0.0, "mz":0.0,
-				    "state": NOT_CONNECTED,
-				    "color": STATECOLOR[NOT_CONNECTED],
-				    "G": ["G54"]}
-		self._posUpdate  = False
-		self._posUpdate2 = False
-		self._posUpdate3 = False
-		self.running     = False
-		self._runLines   = 0
-		#self._runLineMap = []
-		self._quit       = 0
-		self._pause      = False
-		self._drawAfter  = None	# after handle for modification
-		self._alarm      = True
-		self._inFocus    = False
-		self.monitorSerial()
-		self.toggleDrawFlag()
-
-		# Create tools
-		self.toolFrame.fill()
-		self.loadConfig()	# load rest of config
 
 	#----------------------------------------------------------------------
 	def createToolbar(self, toolbar):
@@ -1262,6 +1373,19 @@ class Application(Toplevel):
 					compound=LEFT,
 					command=self.reload)
 		self.widgets.append((menu,i))
+
+		i += 1
+		menu.add_separator()
+
+		i += 1
+		menu.add_command(label="Import", underline=0,
+					image=Utils.icons["empty"],
+					compound=LEFT,
+					command=self.importFile)
+		self.widgets.append((menu,i))
+
+		i += 1
+		menu.add_separator()
 
 		i += 1
 		submenu = Menu(menu)
@@ -1808,6 +1932,11 @@ class Application(Toplevel):
 		menu = Menu(menubar)
 		menubar.add_cascade(label="About", underline=0, menu=menu)
 
+		menu.add_command(label="Report", underline=0,
+					image=Utils.icons["empty"],
+					compound=LEFT,
+					command=self.reportDialog)
+
 		menu.add_command(label="About", underline=0,
 					image=Utils.icons["about"],
 					compound=LEFT,
@@ -1837,7 +1966,7 @@ class Application(Toplevel):
 
 		CNCPendant.stop()
 		self.destroy()
-		if Utils.errors and _errorReport:
+		if Utils.errors and Utils._errorReport:
 			Utils.ReportDialog.sendErrorReport()
 		tk.destroy()
 
@@ -1878,8 +2007,8 @@ class Application(Toplevel):
 
 	#----------------------------------------------------------------------
 	def loadConfig(self):
-		geom = "%sx%s" % (Utils.getInt(Utils.__prg__, "width", 800),
-				  Utils.getInt(Utils.__prg__, "height", 600))
+		geom = "%sx%s" % (Utils.getInt(Utils.__prg__, "width", 900),
+				  Utils.getInt(Utils.__prg__, "height", 650))
 		try: self.geometry(geom)
 		except: pass
 
@@ -1891,19 +2020,8 @@ class Application(Toplevel):
 
 		CNCPendant.port = Utils.getInt("Connection","pendantport",CNCPendant.port)
 
-		if int(Utils.config.get("Connection","pendant")):
-			self.startPendant(False)
-
-		if int(Utils.config.get("Connection","openserial")):
-			self.openClose()
-
 		# Create tools
 		self.tools.load(Utils.config)
-		try:
-			self.toolFrame.set(Utils.config.get(Utils.__prg__, "tool"))
-		except:
-			self.toolFrame.set("Box")
-
 		self.loadHistory()
 
 	#----------------------------------------------------------------------
@@ -2018,9 +2136,13 @@ class Application(Toplevel):
 	#----------------------------------------------------------------------
 	def about(self, event=None):
 		tkMessageBox.showinfo("About",
-				"%s\nby %s [%s]\nVersion %s" % \
-				(Utils.__prg__, __author__, __email__, __version__),
+				"%s\nby %s [%s]\nVersion: %s\nLast Change: %s" % \
+				(Utils.__prg__, __author__, __email__, __version__, __date__),
 				parent=self)
+
+	#----------------------------------------------------------------------
+	def reportDialog(self, event=None):
+		Utils.ReportDialog(self)
 
 	#----------------------------------------------------------------------
 	def insertBlock(self):
@@ -2187,15 +2309,14 @@ class Application(Toplevel):
 	# Execute a single command
 	#----------------------------------------------------------------------
 	def execute(self, line):
-		ch = line[0]
-		if ch in ("$","!","~","?","(") or GPAT.match(line):
+		if line[0] in ("$","!","~","?","(") or GPAT.match(line):
 			self.send(line+"\n")
 			return
 
-###		elif ch == "/":
+###		elif line[0] == "/":
 ###			self.editor.find(line[1:])
 ###			return
-###		elif ch == ":":
+###		elif line[0] == ":":
 ###			self.editor.setInsert("%s.0"%(line[1:]))
 ###			return
 
@@ -2285,7 +2406,7 @@ class Application(Toplevel):
 		elif cmd == "HOME":
 			self.home()
 
-		# HOLE: perform a homing cycle
+		# HOLE: create a hole
 		elif cmd == "HOLE":
 			try: radius = float(line[1])
 			except: return
@@ -2298,6 +2419,15 @@ class Application(Toplevel):
 			self.gcodelist.fill()
 			self.draw()
 			self.statusbar["text"] = "BOX with fingers generated"
+
+
+		# IM*PORT <filename>: import filename with gcode or dxf at cursor location
+		# or at the end of the file
+		elif rexx.abbrev("IMPORT",cmd,2):
+			try:
+				self.importFile(line[1])
+			except:
+				pass
 
 		# INK*SCAPE: remove uneccessary Z motion as a result of inkscape gcodetools
 		elif rexx.abbrev("INKSCAPE",cmd,3):
@@ -2580,6 +2710,27 @@ class Application(Toplevel):
 		elif rexx.abbrev("UNLOCK",cmd,3):
 			self.unlock()
 
+		# US*ER cmd: execute user command, cmd=number or name
+		elif rexx.abbrev("USER",cmd,2):
+			n = Utils.getInt("Buttons","n",6)
+			try:
+				idx = int(line[1])
+			except:
+				try:
+					name = line[1].upper()
+					for i in range(n):
+						if name == Utils.getStr("Buttons","name.%d"%(i),"").upper():
+							idx = i
+							break
+				except:
+					return
+			if idx<0 or idx>=n:
+				self.statusbar["text"] = "Invalid user command %s"%(line[1])
+				return
+			cmd = Utils.getStr("Buttons","command.%d"%(idx),"")
+			for line in cmd.splitlines():
+				self.execute(line)
+
 		# WCS [n]: switch to workspace index n
 		elif rexx.abbrev("WORKSPACE",cmd,4) or cmd=="WCS":
 			self.tabPage.changePage("WCS")
@@ -2812,17 +2963,29 @@ class Application(Toplevel):
 			self.loadGcode(filename)
 
 	#----------------------------------------------------------------------
-#	def import(self, filename):
-#		fn,ext = os.path.splitext(filename)
-#		if ext==".probe":
-#			self.loadProbe(filename)
-#		elif ext==".dxf":
-#			if self.gcode.importDXF(filename):
-#				self.gcodelist.fill()
-#				self.draw()
-#				self.statusbar["text"] = "DXF imported from "+filename
-#		else:
-#			self.loadGcode(filename)
+	def importFile(self, filename=None):
+		if filename is None:
+			filename = bFileDialog.askopenfilename(master=self,
+				title="Import Gcode/DXF file",
+				initialfile=os.path.join(
+						Utils.config.get("File", "dir"),
+						Utils.config.get("File", "file")),
+				filetypes=[("G-Code",("*.ngc","*.nc", "*.gcode")),
+					   ("DXF",    "*.dxf"),
+					   ("All","*")])
+		if filename:
+			gcode = CNC.GCode()
+			gcode.load(filename)
+			sel = self.gcodelist.getSelectedBlocks()
+			if not sel:
+				pos = None
+			else:
+				pos = sel[-1]
+			self.gcode.addUndo(self.gcode.insBlocksUndo(pos, gcode.blocks))
+			del gcode
+			self.gcodelist.fill()
+			self.draw()
+			self.canvas.fit2Screen()
 
 	#----------------------------------------------------------------------
 	def save(self, filename):
@@ -2904,12 +3067,13 @@ class Application(Toplevel):
 		if self is not event.widget: return
 		self._inFocus = True
 		if self.gcode.checkFile():
-			if self.gcode.canUndo() or self.gcode.canRedo():
+			if self.gcode.isModified():
 				ans = tkMessageBox.askquestion("Warning",
 					"Gcode file %s was changed since editing started\n" \
 					"Reload new version?"%(self.gcode.filename),
 					parent=self)
 				if ans==tkMessageBox.YES or ans==True:
+					self.gcode.resetModified()
 					self.loadGcode()
 			else:
 				self.loadGcode()
@@ -2943,7 +3107,6 @@ class Application(Toplevel):
 			self.serial.write("\r\n\r\n")
 			self._gcount = 0
 			self._alarm  = True
-			self._cline  = []
 			self.thread  = threading.Thread(target=self.serialIO)
 			self.thread.start()
 			return True
@@ -3020,7 +3183,7 @@ class Application(Toplevel):
 		self.tabPage.changePage("Terminal")
 
 	def checkGcode(self):
-		self.send("$C\n")		
+		self.send("$C\n")
 
 	def grblhelp(self):
 		self.send("$\n")
@@ -3030,6 +3193,47 @@ class Application(Toplevel):
 		self.terminal["state"] = NORMAL
 		self.terminal.delete("1.0",END)
 		self.terminal["state"] = DISABLED
+
+	#----------------------------------------------------------------------
+	def _gChange(self, value, dictionary):
+		for k,v in dictionary.items():
+			if v==value:
+				self.send("%s\n"%(k))
+				return
+
+	#----------------------------------------------------------------------
+	def distanceChange(self):
+		if self._gUpdate: return
+		self._gChange(self.distanceMode.get(), DISTANCE_MODE)
+
+	#----------------------------------------------------------------------
+	def unitsChange(self):
+		if self._gUpdate: return
+		self._gChange(self.units.get(), UNITS)
+
+	#----------------------------------------------------------------------
+	def feedModeChange(self):
+		if self._gUpdate: return
+		self._gChange(self.feedMode.get(), FEED_MODE)
+
+	#----------------------------------------------------------------------
+	def planeChange(self):
+		if self._gUpdate: return
+		self._gChange(self.plane.get(), PLANE)
+
+	#----------------------------------------------------------------------
+	def setFeedRate(self, event=None):
+		if self._gUpdate: return
+		try:
+			feed = float(self.feedRate.get())
+			self.send("F%g\n"%(feed))
+			self.canvasFocus()
+		except ValueError:
+			pass
+
+	#----------------------------------------------------------------------
+	def setTool(self, event=None):
+		pass
 
 	#----------------------------------------------------------------------
 	def spindleControl(self, event=None):
@@ -3154,27 +3358,29 @@ class Application(Toplevel):
 	def resetZ(self, event):
 		if not self.running: self.send("G10P0L20Z0\n")
 
+	#----------------------------------------------------------------------
 	def feedHold(self, event=None):
 		if event is not None and not self.acceptKey(True): return
 		if self.serial is None: return
 		self.serial.write("!")
 		self.serial.flush()
-		self._pause = False
+		self._pause = True
 
+	#----------------------------------------------------------------------
 	def resume(self, event=None):
 		if event is not None and not self.acceptKey(True): return
 		if self.serial is None: return
 		self.serial.write("~")
 		self.serial.flush()
-		self._pause = True
+		self._pause = False
 
 	#----------------------------------------------------------------------
 	def pause(self, event=None):
 		if self.serial is None: return
 		if self._pause:
-			self.feedHold()
-		else:
 			self.resume()
+		else:
+			self.feedHold()
 
 	#----------------------------------------------------------------------
 	def wcsSet(self, event=None):
@@ -3193,7 +3399,6 @@ class Application(Toplevel):
 	def wcsChange(self):
 		idx = self.wcsvar.get()
 		self.send(WCS[idx]+"\n$G\n")
-		self._posUpdate2 = True
 
 	#----------------------------------------------------------------------
 	# Return the X%g Y%g Z%g from user input
@@ -3423,6 +3628,9 @@ class Application(Toplevel):
 				parent=self)
 			return
 		if self.running:
+			if self._pause:
+				self.resume()
+				return
 			tkMessageBox.showerror("Already running",
 				"Please stop before",
 				parent=self)
@@ -3439,6 +3647,14 @@ class Application(Toplevel):
 				"Not gcode file was loaded",
 				parent=self)
 			return
+
+		# reset colors
+		for ij in paths:
+			if ij:
+				self.canvas.itemconfig(
+					self.gcode[ij[0]].path(ij[1]),
+					width=1,
+					fill=CNCCanvas.ENABLE_COLOR)
 
 		self.initRun()
 		# the buffer of the machine should be empty?
@@ -3510,18 +3726,20 @@ class Application(Toplevel):
 	# thread performing I/O on serial line
 	#----------------------------------------------------------------------
 	def serialIO(self):
-		# Send one ?
+		cline = []
 		tosend = None
-		t = time.time()
+		tr = tg = time.time()
 		while self.thread:
-			if time.time()-t > SERIAL_POLL:
+			t = time.time()
+			if t-tr > SERIAL_POLL:
+				# Send one ?
 				self.serial.write("?")
-				t = time.time()
+				tr = t
 
 			if tosend is None and self.queue.qsize()>0:
 				try:
 					tosend = self.queue.get_nowait()
-					self._cline.append(len(tosend))
+					cline.append(len(tosend))
 					self.log.put((True,tosend))
 				except Empty:
 					break
@@ -3529,8 +3747,7 @@ class Application(Toplevel):
 			if tosend is None or self.serial.inWaiting():
 				line = self.serial.readline().strip()
 				if line:
-					ch = line[0]
-					if ch=="<":
+					if line[0]=="<":
 						pat = STATUSPAT.match(line)
 						if pat:
 							if not self._alarm:
@@ -3545,7 +3762,7 @@ class Application(Toplevel):
 						else:
 							self.log.put((False, line+"\n"))
 
-					elif ch=="[":
+					elif line[0]=="[":
 						self.log.put((False, line+"\n"))
 						pat = POSPAT.match(line)
 						if pat:
@@ -3555,9 +3772,9 @@ class Application(Toplevel):
 										 float(pat.group(2))+self._pos["wx"]-self._pos["mx"],
 										 float(pat.group(3))+self._pos["wy"]-self._pos["my"],
 										 float(pat.group(4))+self._pos["wz"]-self._pos["mz"])
-								self._posUpdate3 = True
+								self._probeUpdate = True
 							else:
-								self._posUpdate2 = True
+								self._wcsUpdate = True
 							self._pos[pat.group(1)] = \
 								[float(pat.group(2)),
 								 float(pat.group(3)),
@@ -3568,12 +3785,14 @@ class Application(Toplevel):
 								self._pos[pat.group(1)] = pat.group(2)
 							else:
 								self._pos["G"] = line[1:-1].split()
+								self._gUpdate = True
 
 					else:
 						self.log.put((False, line+"\n"))
-						if line.find("error")>=0 or line.find("ALARM")>=0:
+						uline = line.upper()
+						if uline.find("ERROR")>=0 or uline.find("ALARM")>=0:
 							self._gcount += 1
-							if self._cline: del self._cline[0]
+							if cline: del cline[0]
 							if not self._alarm:
 								self._posUpdate = True
 							self._alarm = True
@@ -3582,17 +3801,22 @@ class Application(Toplevel):
 
 						elif line.find("ok")>=0:
 							self._gcount += 1
-							if self._cline: del self._cline[0]
+							if cline: del cline[0]
 
-			if tosend is not None and sum(self._cline) <= RX_BUFFER_SIZE-2:
+			if tosend is not None and sum(cline) <= RX_BUFFER_SIZE-2:
 				if isinstance(tosend, unicode):
 					self.serial.write(tosend.encode("ascii","replace"))
 				else:
 					self.serial.write(str(tosend))
 				tosend = None
 
+				if not self.running and t-tg > G_POLL:
+					self.serial.write("$G\n")
+					tg = t
+
 	#----------------------------------------------------------------------
-	# thread performing I/O on serial line
+	# "thread" timed function looking for messages in the serial thread
+	# and reporting back in the terminal
 	#----------------------------------------------------------------------
 	def monitorSerial(self):
 		inserted = False
@@ -3630,6 +3854,8 @@ class Application(Toplevel):
 					self._pos["color"] = STATECOLOR["Alarm"]
 				else:
 					self._pos["color"] = STATECOLORDEF
+			if state == "Hold": self._pause = True
+
 			self.state["background"] = self._pos["color"]
 
 			self.xwork["text"] = self._pos["wx"]
@@ -3649,7 +3875,7 @@ class Application(Toplevel):
 			self._posUpdate = False
 
 		# Update parameters if needed
-		if self._posUpdate2:
+		if self._wcsUpdate:
 			try:
 				value = self._pos[WCS[self.wcsvar.get()]]
 				for i in range(3):
@@ -3658,19 +3884,36 @@ class Application(Toplevel):
 				pass
 
 			self._tlo["text"] = self._pos.get("TLO","")
+			self._wcsUpdate = False
 
-			try:
-				for g in self._pos["G"]:
+		# Update status string
+		if self._gUpdate:
+			for g in self._pos["G"]:
+				if g[0]=='G':
 					try:
-						self.wcsvar.set(WCS.index(g))
-					except ValueError:
-						pass
-			except KeyError:
-				pass
-			self._posUpdate2 = False
+						w, v = self.gstate[g]
+						w.set(v)
+					except KeyError:
+						try:
+							self.wcsvar.set(WCS.index(g))
+						except ValueError:
+							pass
+				elif g[0] == 'F':
+					if self.focus_get() is not self.feedRate:
+						self.feedRate.delete(0,END)
+						self.feedRate.insert(0,g[1:])
+
+				elif g[0] == 'T':
+					if self.focus_get() is not self.toolEntry:
+						self.toolEntry.delete(0,END)
+						self.toolEntry.insert(0,g[1:])
+
+				elif g[0] == 'S':
+					self.spindleSpeed.set(int(float(g[1:])))
+			self._gUpdate = False
 
 		# Update probe and draw point
-		if self._posUpdate3:
+		if self._probeUpdate:
 			try:
 				probe = self._pos.get("PRB")
 				self._probeX["text"] = probe[0]
@@ -3679,7 +3922,7 @@ class Application(Toplevel):
 			except:
 				pass
 			self.canvas.drawProbePoint(probe)
-			self._posUpdate3 = False
+			self._probeUpdate = False
 
 		if inserted:
 			self.terminal.see(END)

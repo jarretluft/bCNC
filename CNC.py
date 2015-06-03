@@ -330,9 +330,9 @@ class CNC:
 	feedmax_x      = 3000
 	feedmax_y      = 3000
 	feedmax_z      = 2000
-	travel_x       = 370
-	travel_y       = 205
-	travel_z       = 100
+	travel_x       = 300
+	travel_y       = 300
+	travel_z       = 60
 	accuracy       = 0.02	# sagitta error during arc conversion
 	digits         = 4
 	startup        = "G90"
@@ -361,6 +361,17 @@ class CNC:
 		CNC.startup        =       config.get(section, "startup")
 		CNC.header         =       config.get(section, "header")
 		CNC.footer         =       config.get(section, "footer")
+
+		if CNC.inch:
+			CNC.acceleration_x  /= 25.4
+			CNC.acceleration_y  /= 25.4
+			CNC.acceleration_z  /= 25.4
+			CNC.feedmax_x       /= 25.4
+			CNC.feedmax_y       /= 25.4
+			CNC.feedmax_z       /= 25.4
+			CNC.travel_x        /= 25.4
+			CNC.travel_y        /= 25.4
+			CNC.travel_z        /= 25.4
 
 		section = "Error"
 		for cmd,value in config.items(section):
@@ -802,11 +813,15 @@ class GCode:
 	def isModified(self): return self._modified
 
 	#----------------------------------------------------------------------
+	def resetModified(self): self._modified = False
+
+	#----------------------------------------------------------------------
 	# Load a file into editor
 	#----------------------------------------------------------------------
 	def load(self, filename=None):
+		if filename is None: filename = self.filename
 		self.init()
-		if filename is not None: self.filename = filename
+		self.filename = filename
 		try: f = open(self.filename,"r")
 		except: return False
 		self._lastModified = os.stat(self.filename).st_mtime
@@ -1195,7 +1210,26 @@ class GCode:
 	def delBlockUndo(self, bid):
 		lines = [x for x in self.blocks[bid]]
 		block = self.blocks.pop(bid)
-		undoinfo = (self.addBlockUndo, bid, block) #list(self.blocks[bid])[:])
+		undoinfo = (self.addBlockUndo, bid, block)
+		return undoinfo
+
+	#----------------------------------------------------------------------
+	# Insert a list of other blocks from another gcode file probably
+	#----------------------------------------------------------------------
+	def insBlocksUndo(self, bid, blocks):
+		if bid is None or bid >= len(self.blocks):
+			bid = len(blocks)
+		undoinfo = (self.delBlocksUndo,bid, bid+len(blocks))
+		self.blocks[bid:bid] = blocks
+		return undoinfo
+
+	#----------------------------------------------------------------------
+	# Delete a range of blocks
+	#----------------------------------------------------------------------
+	def delBlocksUndo(self, from_, to_):
+		blocks = self.blocks[from_:to_]
+		undoinfo = (self.insBlocksUndo, from_, blocks)
+		del self.blocks[from_:to_]
 		return undoinfo
 
 	#----------------------------------------------------------------------
@@ -1518,11 +1552,11 @@ class GCode:
 						lines.append("g0 %s"%(self.fmt("z",self.safe)))
 					else:
 						z = self.surface
-						while z>depth: 
+						while z>depth:
 							z = max(z-peck, depth)
 							lines.append("g1 %s %s"%(
 								self.fmt("z",z),
-								self.fmt("f",self.feedz))) 
+								self.fmt("f",self.feedz)))
 							lines.append("g0 %s"%(self.fmt("z",self.safe)))
 							if dwell:
 								lines.append("g4 %s"%(self.fmt("p",dwell)))
@@ -1843,7 +1877,7 @@ class GCode:
 	#----------------------------------------------------------------------
 	def roundFunc(self, new, old):
 		for name,value in new.items():
-			new[name] = round(value,self.digits)
+			new[name] = round(value,CNC.digits)
 		return bool(new)
 
 	#----------------------------------------------------------------------

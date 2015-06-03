@@ -12,6 +12,8 @@ import sys
 #import cgi
 import json
 import threading
+import urllib
+
 from websocket_server import WebsocketServer
 
 try:
@@ -56,7 +58,7 @@ class Pendant(HTTPServer.BaseHTTPRequestHandler):
 		arg = None
 
 		self.mainPage(page[1:])
-
+		
 	# ---------------------------------------------------------------------
 	def mainPage(self, page):
 		global prgpath
