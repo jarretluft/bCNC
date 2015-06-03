@@ -22,6 +22,7 @@ import string
 import serial
 import socket
 import threading
+import json
 try:
 	from serial.tools.list_ports import comports
 except:
@@ -3833,6 +3834,7 @@ class Application(Toplevel):
 					self.terminal.insert(END, line, "SEND")
 				else:
 					self.terminal.insert(END, line)
+					CNCPendant.ws_send(json.dumps({"cmd":"serialRead", "line": line}))
 			except Empty:
 				break
 
@@ -3845,6 +3847,7 @@ class Application(Toplevel):
 
 		# Update position if needed
 		if self._posUpdate:
+			CNCPendant.ws_send(json.dumps({"cmd" : "machineStatus", "arr" : self._pos}))
 			state = self._pos["state"]
 			self.state["text"] = state
 			try:

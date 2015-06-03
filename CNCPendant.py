@@ -29,7 +29,7 @@ except ImportError:
 HOSTNAME = "localhost"
 port = 8080
 httpd = None
-prgpath = os.path.abspath(os.path.dirname(sys.argv[0]))
+prgpath = os.path.abspath(os.path.dirname(sys.argv[0])+'/static')
 
 ws_server = None
 ws_port = 9001
@@ -91,28 +91,28 @@ Page not found.
 # -----------------------------------------------------------------------------
 # receive message from client
 def ws_receive(client, server, message):
-	result = json.loads(message) #assume all messages from client are JSON format
+	data = json.loads(message) #assume all messages from client are JSON format
 
 	#handle result, for now just dump to cmd line
-	if result['type'] == "state":
-		ws_send(json.dumps(httpd.app._pos))
+	#this should be auto-pushed when queried
+	#if data['cmd'] == "machineStatus":
+	#	ws_send(json.dumps(httpd.app._pos))
 
-	elif result['type'] == "config":
-		snd = {}
-		snd["rpmmax"] = httpd.app.get("CNC","spindlemax")
-		ws_send(json.dumps(snd))
+	print data
 
-	elif result['type'] == "command":
-		httpd.app.pendant.put(result['content'])
-
-	elif result['type'] == "gcode":
-		for line in result['content'].split('\n'):
+	if data['cmd'] == "gcodeLine":
+		for line in data['line'].split('\n'):
 			httpd.app.queue.put(line+"\n")
+
+	elif data['cmd'] == "command":
+		httpd.app.pendant.put(data['value'])
+		
 
 # send message to all connected clients
 def ws_send(msg):
 	global ws_server
 	try:
+		print msg
 		ws_server.send_message_to_all(msg)
 	except:
 		ws_server = None
