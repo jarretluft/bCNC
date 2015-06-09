@@ -13,8 +13,12 @@ import sys
 import json
 import threading
 import urllib
-
 from websocket_server import WebsocketServer
+
+try:
+	from serial.tools.list_ports import comports
+except:
+	from Utils import comports
 
 try:
 	import urlparse
@@ -104,9 +108,30 @@ def ws_receive(client, server, message):
 		for line in data['line'].split('\n'):
 			httpd.app.queue.put(line+"\n")
 
+    if data['cmd'] == "gcodeFile":
+  #   	self.gcodelist.selectClear()
+		# self.gcode.load(filename)
+		# self.gcodelist.fill()
+		# self.draw()
+		# self.canvas.fit2Screen()
+		# self.title("%s: %s"%(Utils.__prg__,self.gcode.filename))
+
 	elif data['cmd'] == "command":
 		httpd.app.pendant.put(data['value'])
-		
+
+	elif data['cmd'] == "portList":
+		ws_send(json.dumps({"cmd":"portList", "ports" : sorted([x[0] for x in comports()])}))
+	
+	elif data['cmd'] == "connect":
+		if httpd.app.serial is None:
+			device  = data['port']
+			baudrate = int(data['baud'])
+			if httpd.app.open(device, baudrate):
+				httpd.app.connectBtn.config(text="Close",
+						background="Salmon",
+						activebackground="Salmon")
+				httpd.app.enable()
+
 
 # send message to all connected clients
 def ws_send(msg):

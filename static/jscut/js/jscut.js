@@ -306,7 +306,7 @@ function popoverHover(obj, placement, content) {
     });
 }
 
-popoverHover('#pxPerInch', "bottom", "SVG editors use different scales from each other; set this to allow sizes come out correctly.<br><br><table><tr><td>Inkscape:<td>90<tr><td>Adobe Illustrator:<td>72<tr><td>CorelDRAW:<td>96</table>");
+popoverHover('#pxPerInch', "bottom", "SVG editors use different scales from each other; set this to allow sizes come out correctly.<br><br><table><tr><td>Inkscape 0.9x:<td>96<tr><td>Inkscape 0.4x:<td>90<tr><td>Adobe Illustrator:<td>72<tr><td>CorelDRAW:<td>96</table>");
 
 popoverHover('#tabsMaxCutDepth', "right", "Maximum depth operations may cut when they pass over tabs");
 
@@ -344,7 +344,7 @@ var operationPopovers = {
     opRamp: ['right', 'Ramp the cutter in gradually instead of plunging straight down'],
     opCombine: ['right', 'How to combine multiple objects into this operation'],
     opDirection: ['right', 'What direction the cutter should travel'],
-    opCutDepth: ['right', 'How deep this operation should cut in total'],
+    opCutDepth: ['top', 'How deep this operation should cut in total'],
     opVMaxDepth: ['right', "Maximum depth this operation should cut. <p class='bg-danger'>not implemented yet; this is ignored.</p>"],
     opMargin: ['right', 'Positive: how much material to leave uncut.<br><br>Negative: how much extra material to cut'],
     opWidth: ['right', 'How wide a path to cut. If this is less than the cutter width then it uses the cutter width.'],
@@ -826,21 +826,4 @@ function chiliSaveGcode() {
 if (typeof options.preloadInBrowser == 'string' && options.preloadInBrowser.length > 0) {
     var settings = JSON.parse(localStorage.getItem("settings"));
     fromJson(settings[options.preloadInBrowser]);
-}
-
-function grblWebSaveGcode() {
-    var alert = showAlert("Sending gcode to GRBLweb", "alert-info", false);
-    $.ajax({
-        url: "/api/uploadGcode",
-        type: "POST",
-        data: { val: gcodeConversionViewModel.gcode() },
-        dataType: "json",
-    })
-    .done(function (content) {
-        alert.remove();
-    })
-    .fail(function (e) {
-        alert.remove();
-        showAlert("Can't save gcode to GRBLweb", "alert-danger");
-    });
 }

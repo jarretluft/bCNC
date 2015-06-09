@@ -6,17 +6,26 @@ $(document).ready(function() {
 		$('.table-layout').css('margin-top',$('.navbar-collapse').height()-34);
 	});
 
-
 	// Connect to Web Socket && Set all websocket event handlers
 	socket = new WebSocket("ws://" + document.domain + ":9001/");
+
+	//emulate the socket.io emit function so that I don't have to re-write all the code below.
+	socket.emit = function(first, second) {
+		if(second["line"] !== undefined){
+			$('#console').append(second["line"]+"\n");
+			$('#console').scrollTop($("#console")[0].scrollHeight - $("#console").height());
+		}
+		socket.send(JSON.stringify(second));
+	};
 	socket.onopen = function() {
 		console.log("WS: onopen");
 		$("#ws-status").toggleClass("led-red led-green");
 		$("#ws-status").prop('title', 'Server Online');
+	    socket.emit('command',{"cmd":"portList"}); //request the initial port list... Not sure how to handle refreshing this if new ports are added.
 	};
 	socket.onmessage = function(e) {
 		// e.data contains received string.
-		//console.log("WS: onmessage: " + e.data);
+		console.log("WS: onmessage: " + e.data);
 		parseMessage(e.data);
 	};
 	socket.onclose = function() {
@@ -29,54 +38,67 @@ $(document).ready(function() {
 		console.log(e)
 	};
 
-	//emulate the socket.io emit function so that I don't have to re-write all the code below.
-	socket.emit = function(first, second) {
-		$('#console').append(second["line"]+"\n");
-		$('#console').scrollTop($("#console")[0].scrollHeight - $("#console").height());
-		socket.send(JSON.stringify(second));
-	};
-
     var parseMessage = function(msg){
-    	data = JSON.parse(msg);
-    	console.log(data);
+		data = JSON.parse(msg);
+		console.log(data);
 
-    	switch(data.cmd){
-    		case "machineStatus":
-    			data = data.arr;
-    			$('#mStatus').html(data.state);
+		switch(data.cmd){
+			case "machineStatus":
+				data = data.arr;
+
+				if($('#mStatus').html() !== data.state){
+					$('#mStatus').html(data.state);
+					if(data.state !== "Not connected"){
+						$('#mConnectPort').css('display','none');
+						$('#mConnectBaud').css('display','none');
+						$('#mConnectButton').css('display','none');
+						$('#mDisconnectButton').css('display','inline');
+					}else{
+						$('#mConnectPort').css('display','inline');
+						$('#mConnectBaud').css('display','inline');
+						$('#mConnectButton').css('display','inline');
+						$('#mDisconnectButton').css('display','none');
+					}
+				}
+
 				$('#mX').html('X: '+data.mx);
 				$('#mY').html('Y: '+data.my);
 				$('#mZ').html('Z: '+data.mz);
 				$('#wX').html('X: '+data.wx);
 				$('#wY').html('Y: '+data.wy);
 				$('#wZ').html('Z: '+data.wz);
-    		 	break;
+			 	break;
 
-    		case "machineSettings":
+			case "machineSettings":
 	    		var settingHtml = '<pre>';
 				data.forEach(function(setting) {
 					settingHtml += '<span>'+setting+'</span>';
 				});
 				$('#settings').find('.modal-body').html(settingHtml+'</pre>');
 				$('#extraSettings').show();
-    			break;
+				break;
 
-    		case "serialRead":
+			case "serialRead":
 	    		$('#console').append(data.line);
 				$('#console').scrollTop($("#console")[0].scrollHeight - $("#console").height());
-    			break;
+				break;
 
-    		case "qStatus":
-    			$('#qStatus').html(data.currentLength+'/'+data.currentMax);
-    			break;
+			case "qStatus":
+				$('#qStatus').html(data.currentLength+'/'+data.currentMax);
+				break;
 
-    		default:
-    			break;
+			case "portList":
+				$.each(data.ports, function(key, value) {
+				     $('#mConnectPort')
+				         .append($("<option></option>")
+				         .attr("value",value)
+				         .text(value));
+				});
+			default:
+				break;
 
-    	}
- 
-    }
-
+		}
+	};
 	// $("#ws-status").toggleClass("led-red led-green");
 	// $("#ws-status").prop('title', 'Server Online');
 
@@ -143,6 +165,12 @@ $(document).ready(function() {
 			case "abort":
 			case "sendReset":
 				socket.emit('command',{"cmd":"command", "value":"RESET"});
+				break;
+			case "mConnectButton":
+				socket.emit('command',{"cmd":"connect", "port": $('#mConnectPort').val(), "baud": $('#mConnectBaud').val()});
+				break;
+			case "mDisconnectButton":
+				socket.emit('command',{"cmd":"command","value":"CLOSE"});
 				break;
 			case "sendUnlock":
 				socket.emit('command',{"cmd":"gcodeLine","line":"$X"});

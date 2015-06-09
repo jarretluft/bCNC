@@ -9,7 +9,7 @@
 
     <title>Raspberry Pi CNC</title>
 
-    <script src="/js/socket.io.min.js"></script>
+    <!--<script src="/js/socket.io.min.js"></script>-->
     <script src="/js/jquery.min.js"></script>
     <script src="/js/bootstrap.min.js"></script>
     <script src="/js/main.js"></script>
@@ -67,9 +67,21 @@
                 <option val="no">Select a serial port</option>
             </select>
             -->
-
-            <h5 id="mStatus" style="text-align: right;">Select Port</h5>
-
+            <div id="mStatsContainer">
+                <h5 id="mStatus" style="text-align: right;">Select Port</h5>
+            </div>
+            <div id="mConnectContainer" style="text-align:right;">
+                <select class="form-control" id="mConnectPort"></select>
+                <select class="form-control" id="mConnectBaud">
+                    <option value="9600">Baud: 9600</option>
+                    <option value="19200">Baud: 19200</option>
+                    <option value="38400">Baud: 38400</option>
+                    <option value="57600">Baud: 57600</option>
+                    <option value="115200" selected>Baud: 115200</option>
+                </select>
+                <button type="button" class="btn btn-sm btn-default" id="mConnectButton">Connect</button>
+                <button type="button" class="btn btn-sm btn-default" id="mDisconnectButton" style="display: none;">Disconnect</button>
+            </div>
             <ul class="nav nav-tabs nav-justified" role="tablist">
                 <li id="mpA">
                     <a id="mpC" href="#">Machine Position</a>
