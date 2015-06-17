@@ -108,13 +108,8 @@ def ws_receive(client, server, message):
 		for line in data['line'].split('\n'):
 			httpd.app.queue.put(line+"\n")
 
-    if data['cmd'] == "gcodeFile":
-  #   	self.gcodelist.selectClear()
-		# self.gcode.load(filename)
-		# self.gcodelist.fill()
-		# self.draw()
-		# self.canvas.fit2Screen()
-		# self.title("%s: %s"%(Utils.__prg__,self.gcode.filename))
+    # elif data['cmd'] == "gcodeFile":
+    # 	pass
 
 	elif data['cmd'] == "command":
 		httpd.app.pendant.put(data['value'])
