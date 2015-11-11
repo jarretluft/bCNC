@@ -33,7 +33,8 @@ except ImportError:
 HOSTNAME = "localhost"
 port = 8080
 httpd = None
-prgpath = os.path.abspath(os.path.dirname(sys.argv[0])+'/static')
+#prgpath = os.path.abspath(os.path.dirname(sys.argv[0])+'/grblweb')
+prgpath = os.path.abspath(os.getcwd()+'/grblweb') #this method seems to work better on python3/mac - argv[0] is empty
 
 ws_server = None
 ws_port = 9001
@@ -75,7 +76,7 @@ class Pendant(HTTPServer.BaseHTTPRequestHandler):
 
 		if page == "": page = "index.html"
 		try:
-			f = open(os.path.join(prgpath,page),"r")
+			f = open(os.path.join(prgpath,page),'r')
 			self.wfile.write(f.read())
 			f.close()
 		except IOError:
@@ -102,37 +103,37 @@ def ws_receive(client, server, message):
 	#if data['cmd'] == "machineStatus":
 	#	ws_send(json.dumps(httpd.app._pos))
 
-	print data
+	print(data)
 
-	if data['cmd'] == "gcodeLine":
-		for line in data['line'].split('\n'):
+	try:
+		for line in data['gcodeLine']['line'].split('\n'):
+			#httpd.app.queue.put(line+"\n")
 			httpd.app.queue.put(line+"\n")
-
-    # elif data['cmd'] == "gcodeFile":
-    # 	pass
-
-	elif data['cmd'] == "command":
-		httpd.app.pendant.put(data['value'])
-
-	elif data['cmd'] == "portList":
-		ws_send(json.dumps({"cmd":"portList", "ports" : sorted([x[0] for x in comports()])}))
-	
-	elif data['cmd'] == "connect":
-		if httpd.app.serial is None:
-			device  = data['port']
-			baudrate = int(data['baud'])
-			if httpd.app.open(device, baudrate):
-				httpd.app.connectBtn.config(text="Close",
-						background="Salmon",
-						activebackground="Salmon")
-				httpd.app.enable()
-
+	except KeyError: #response was not a gcodeLine
+		try:
+			httpd.app.queue.put(data['command'])
+		except KeyError: #response was not a command
+			try:
+				if data['portList'] == 1:
+					ws_send(json.dumps({"cmd":"portList", "ports" : sorted([x[0] for x in comports()])}))
+			except KeyError: #response was not requesting a port list
+				try:
+					device  = data['usePort']['port']
+					baudrate = int(data['usePort']['baud'])
+					if httpd.app.serial is None:
+						if httpd.app.open(device, baudrate):
+							httpd.app.connectBtn.config(text="Close",
+									background="Salmon",
+									activebackground="Salmon")
+							httpd.app.enable()
+				except KeyError: #response was not requesting to connect to a port
+					print("Unknown Command!")
 
 # send message to all connected clients
 def ws_send(msg):
 	global ws_server
 	try:
-		print msg
+		print(msg)
 		ws_server.send_message_to_all(msg)
 	except:
 		ws_server = None
